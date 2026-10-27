@@ -126,6 +126,28 @@ R"GSRT(/* Goose runtime — the part every compiler-generated C file starts with
 #define GS_NORETURN __attribute__((noreturn))
 #define GS_NOINLINE __attribute__((noinline))
 #endif
+/* A scalar read or written in place in packed memory: a data stack, the
+   bytes of a packed type. Values there start at any address, so the C
+   access says so, which C requires and UBSan's alignment check enforces.
+   On every target Goose supports it is the same single load or store as
+   the plain type. Without the attribute, the plain type, as before.
+   An exported header (--header) carries the same block, hence the guard. */
+#ifndef GS_UA_TYPES
+#define GS_UA_TYPES
+#if defined(__GNUC__) || defined(__clang__)
+#define GS_UNALIGNED __attribute__((aligned(1)))
+#else
+#define GS_UNALIGNED
+#endif
+typedef int16_t gs_ua_i16 GS_UNALIGNED;
+typedef int32_t gs_ua_i32 GS_UNALIGNED;
+typedef int64_t gs_ua_i64 GS_UNALIGNED;
+typedef uint16_t gs_ua_u16 GS_UNALIGNED;
+typedef uint32_t gs_ua_u32 GS_UNALIGNED;
+typedef uint64_t gs_ua_u64 GS_UNALIGNED;
+typedef float gs_ua_f32 GS_UNALIGNED;
+typedef double gs_ua_f64 GS_UNALIGNED;
+#endif
 /* Inlined at every call: the byte search's helpers (runtime_impl.h), and a
    function Goose wanted to inline but could not (FnSpec::cinline). */
 #if defined(__GNUC__) || defined(__clang__)
@@ -179,7 +201,8 @@ enum {
     GS_E_THREADSELF,   /* a worker cannot wait for itself */
     GS_E_TAG,          /* corrupt ADT tag (debug builds only) */
     GS_E_ENDIAN,       /* serialization on a big-endian host */
-    GS_E_SLICELEN,     /* slice pool length negative or beyond any data stack */
+)GSRT"
+R"GSRT(    GS_E_SLICELEN,     /* slice pool length negative or beyond any data stack */
     GS_E_POOLSLICE,    /* a slice handed to a slice pool is not one of its runs */
     GS_E_RELNULL,      /* a non-null optional self-relative target has offset zero */
     GS_E_POPN,         /* pop_n of a negative count or more than the length */
@@ -195,8 +218,7 @@ GS_API GS_NORETURN void gs_abort_msg(const uint8_t *msg, int64_t len, const char
 GS_API GS_NORETURN void gs_exit(int64_t code);
 GS_API GS_NORETURN void gs_idxfail(int64_t i, int64_t n, const char *file, int line);
 GS_API GS_NORETURN void gs_divfail(const char *file, int line);
-)GSRT"
-R"GSRT(GS_API GS_NORETURN void gs_divovf(const char *file, int line);
+GS_API GS_NORETURN void gs_divovf(const char *file, int line);
 /* The debug build's failing overflow and `as` checks. */
 GS_API GS_NORETURN void gs_ovf(int64_t a, const char *op, int64_t b, const char *type,
                                const char *file, int line);
@@ -332,7 +354,8 @@ static inline int gs_simd_level(void) {
      : GS_KSZ(n, 3, 3) ? (void)(GS_AT(uint16_t, d, 0) = 0, GS_AT(uint8_t, d, 2) = 0) \
      : GS_KSZ(n, 5, 7) ? (void)(GS_AT(uint32_t, d, 0) = 0, GS_AT(uint32_t, d, (n) - 4) = 0) \
      : GS_KSZ(n, 9, 16) ? (void)(GS_AT(uint64_t, d, 0) = 0, GS_AT(uint64_t, d, (n) - 8) = 0) \
-     : GS_KSZ(n, 17, 32) ? (void)(GS_AT(uint64_t, d, 0) = 0, GS_AT(uint64_t, d, 8) = 0, \
+)GSRT"
+R"GSRT(     : GS_KSZ(n, 17, 32) ? (void)(GS_AT(uint64_t, d, 0) = 0, GS_AT(uint64_t, d, 8) = 0, \
                                   GS_AT(uint64_t, d, (n) - 16) = 0, GS_AT(uint64_t, d, (n) - 8) = 0) \
      : (void)memset((d), 0, (n)))
 #else
@@ -356,8 +379,7 @@ static uint64_t gs_bytemask(int64_t k) {
 }
 
 /* memcpy, memmove and memcmp for a slice's elements. An empty slice's data
-)GSRT"
-R"GSRT(   pointer is NULL where the slice was zero-filled (default<T>(), a default
+   pointer is NULL where the slice was zero-filled (default<T>(), a default
    element), and C leaves all three undefined on a null pointer even for
    zero bytes. A copy of up to 16 bytes loads both overlapping halves before
    it stores them, and one of up to 256 bytes moves 16 at a time, the last 16
@@ -500,7 +522,8 @@ GS_DIVOPS_S(i32, int32_t, INT32_MIN, INT32_MAX)
 #define gs_div_i16(a, b, f, l) GS_DIVS(int16_t, a, b, f, l)
 #define gs_div_i32(a, b, f, l) GS_DIVS(int32_t, a, b, f, l)
 #endif
-
+)GSRT"
+R"GSRT(
 #if GS_DEBUG
 
 /* Signed narrow types (8/16/32 bits): 64-bit signed math covers every
@@ -523,8 +546,7 @@ static T gs_neg_##SFX(T a, const char *file, int line) { \
     if (r < MIN || r > MAX) gs_ovf_neg(a, #SFX, file, line); \
     return (T)r; } \
 static T gs_shl_##SFX(T a, int64_t n) { \
-)GSRT"
-R"GSRT(    return (T)((uint64_t)a << (n & (BITS - 1))); } \
+    return (T)((uint64_t)a << (n & (BITS - 1))); } \
 static T gs_shr_##SFX(T a, int64_t n) { \
     return (T)((int64_t)a >> (n & (BITS - 1))); }
 
@@ -680,7 +702,8 @@ static uint64_t gs_divu_gen(uint64_t d, uint8_t *more) {
 #if GS_HAVE_U128
     int k = 63;
     uint64_t rem, m;
-    if (d == 0) { *more = GS_DIVU_NONE; return 0; }
+)GSRT"
+R"GSRT(    if (d == 0) { *more = GS_DIVU_NONE; return 0; }
     while (!(d >> k)) k--;
     if (!(d & (d - 1))) { *more = (uint8_t)k; return 0; }
     /* floor(2^(64+k) / d), which fits since d > 2^k; then the smallest
@@ -711,8 +734,7 @@ static uint64_t gs_divu_q(uint64_t x, uint64_t magic, uint8_t more) {
     return q >> more;
 #else
     (void)magic;
-)GSRT"
-R"GSRT(    return x >> more;   /* Never called: GS_DIVU_NONE takes the operator. */
+    return x >> more;   /* Never called: GS_DIVU_NONE takes the operator. */
 #endif
 }
 
@@ -869,7 +891,8 @@ typedef struct gs_dlbind {
 /* Opens each library once and fills every slot, on the main thread before
    the globals are initialized. A library that does not load, or a symbol it
    does not have, is a runtime error naming both. */
-GS_API void gs_dl_bind(const gs_dllib *libs, int64_t nlibs, const gs_dlbind *binds,
+)GSRT"
+R"GSRT(GS_API void gs_dl_bind(const gs_dllib *libs, int64_t nlibs, const gs_dlbind *binds,
                        int64_t nbinds);
 
 /* ---------------------------------------------------------------------------
@@ -886,8 +909,7 @@ GS_API int64_t gs_thread_start(void (*run)(void (*)(uint8_t *), uint8_t *),
    `msg` is not NULL, the first such wait for a worker that aborted takes its
    message: `msg` and `len` are set to it, which the caller frees with
    gs_free_msg, or to NULL and no bytes. */
-)GSRT"
-R"GSRT(GS_API uint8_t gs_thread_wait(int64_t id, uint8_t **msg, int64_t *len,
+GS_API uint8_t gs_thread_wait(int64_t id, uint8_t **msg, int64_t *len,
                                const char *file, int line);
 GS_API void gs_free_msg(uint8_t *msg);
 
@@ -1065,7 +1087,8 @@ static int64_t gs_zig_read(const uint8_t *p) {
     return (int64_t)((u >> 1) ^ (0u - (u & 1)));
 }
 
-static int64_t gs_zig_write(uint8_t *p, int64_t v) {
+)GSRT"
+R"GSRT(static int64_t gs_zig_write(uint8_t *p, int64_t v) {
     return gs_uleb_write(p, ((uint64_t)v << 1) ^ (uint64_t)(v >> 63));
 }
 
@@ -1087,8 +1110,7 @@ static int64_t gs_uleb_check(const uint8_t *p, const uint8_t *end, uint64_t *out
         b = *q++;
         if (shift > 63 || (shift == 63 && (b & 0x7e))) return 0;
         v |= (uint64_t)(b & 0x7f) << shift;
-)GSRT"
-R"GSRT(        if (!(b & 0x80)) {
+        if (!(b & 0x80)) {
             if (shift && !b) return 0;  /* Redundant high zero group. */
             break;
         }
