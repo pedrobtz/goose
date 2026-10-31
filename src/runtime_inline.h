@@ -1026,6 +1026,12 @@ GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t gap,
                         uint64_t budget, int64_t mainregions, int64_t workerregions);
 /* A fresh region, registered to the calling thread program. */
 GS_API uint8_t *gs_reserve_region(gs_stack *stack);
+/* Region registries a host's contexts hold (--contexts, GS_HOSTED): a new
+   empty one; installing one, which returns the one it replaces (NULL is
+   main's); and releasing one's regions. */
+GS_API void *gs_registry_new(int64_t capacity);
+GS_API void *gs_registry_swap(void *registry);
+GS_API void gs_registry_free(void *registry);
 /* The calling thread program's stack use, on stderr (GS_STACK_STATS):
    `stacks` is how many of its indexed data stacks exist. */
 GS_API void gs_stack_stats(int64_t stacks);
@@ -1465,11 +1471,13 @@ typedef sigjmp_buf gs_host_jmp;
 
 )GSRT"
 R"GSRT(#define GS_HOST_TEXT 512
-typedef struct {
+typedef struct gs_hostcall {
     gs_host_jmp jump;
     char text[GS_HOST_TEXT];
     int64_t len;
     int interrupted;
+    struct gs_hostcall *outer;   /* the call this one is nested in */
+    void *registry;              /* gs_regions as the call began */
 } gs_hostcall;
 static gs_hostcall *gs_host_active;
 
@@ -2291,11 +2299,12 @@ R"GSRT(/* Runs body(data), in which the host calls goose_init or exported
    host's poll stopped it; on a failure every data stack that existed before
    the call is back where it was, and *msg (when msg is not NULL) points at
    the message, valid until the next call. A call made while another runs
-   is refused with 1: the program's globals belong to the outer one. */
+   is refused with 1, since the program's globals belong to the outer one,
+   unless the host has swapped in another context (--contexts) first. */
 GS_API int goose_host_call(void (*body)(void *), void *data, const uint8_t **msg,
                            int64_t *len) {
     static const char reentered[] = "Goose re-entered during a Goose call";
-    if (gs_host_active) {
+    if (gs_host_active && gs_host_active->registry == (void *)gs_regions) {
         memcpy(gs_host_msg, reentered, sizeof reentered);
         if (msg) *msg = (const uint8_t *)gs_host_msg;
         if (len) *len = (int64_t)sizeof reentered - 1;
@@ -2313,16 +2322,21 @@ GS_API int goose_host_call(void (*body)(void *), void *data, const uint8_t **msg
         return 1;
     }
     for (long i = 0; i < n; i++) saved[i] = gs_regions[i].stack->top;
+    call.outer = gs_host_active;
+    call.registry = (void *)gs_regions;
 #ifndef _WIN32
-    struct sigaction sa;
-    memset(&sa, 0, sizeof sa);
-    sa.sa_sigaction = gs_fault_handler;
-    sa.sa_flags = SA_SIGINFO;
-    sigemptyset(&sa.sa_mask);
-    sigaction(SIGSEGV, &sa, &gs_prev_segv);
-    #ifdef SIGBUS
-        sigaction(SIGBUS, &sa, &gs_prev_bus);
-    #endif
+    /* The outermost call installs the handler; a nested one finds it. */
+    if (!call.outer) {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof sa);
+        sa.sa_sigaction = gs_fault_handler;
+        sa.sa_flags = SA_SIGINFO;
+        sigemptyset(&sa.sa_mask);
+        sigaction(SIGSEGV, &sa, &gs_prev_segv);
+        #ifdef SIGBUS
+            sigaction(SIGBUS, &sa, &gs_prev_bus);
+        #endif
+    }
 #endif
     call.len = 0;
     call.interrupted = 0;
@@ -2338,16 +2352,72 @@ GS_API int goose_host_call(void (*body)(void *), void *data, const uint8_t **msg
         if (msg) *msg = (const uint8_t *)gs_host_msg;
         if (len) *len = call.len;
     }
-    gs_host_active = NULL;
+    gs_host_active = call.outer;
 #ifndef _WIN32
-    sigaction(SIGSEGV, &gs_prev_segv, NULL);
-    #ifdef SIGBUS
-        sigaction(SIGBUS, &gs_prev_bus, NULL);
-    #endif
+    if (!call.outer) {
+        sigaction(SIGSEGV, &gs_prev_segv, NULL);
+        #ifdef SIGBUS
+            sigaction(SIGBUS, &gs_prev_bus, NULL);
+        #endif
+    }
 #endif
     if (saved != small) free(saved);
     return failed;
 }
+
+)GSRT"
+R"GSRT(#endif  /* GS_HOSTED */
+
+)GSRT"
+R"GSRT(/* The region registries of a host's contexts. The installed one is always
+   the thread-local trio gs_regions, gs_nregions and gs_regions_cap; a
+   swap saves it into the object that stands for it (main's is static). */
+typedef struct {
+    gs_region *regions;
+    long n, cap;
+} gs_registry;
+static gs_registry gs_registry_main;
+static gs_registry *gs_registry_cur;
+
+)GSRT"
+R"GSRT(GS_API void *gs_registry_new(int64_t capacity) {
+    gs_registry *r = (gs_registry *)calloc(1, sizeof *r);
+    if (!r) return NULL;
+    r->regions = (gs_region *)calloc((size_t)(capacity > 0 ? capacity : 1), sizeof(gs_region));
+    if (!r->regions) {
+        free(r);
+        return NULL;
+    }
+    r->cap = (long)capacity;
+    return r;
+}
+
+)GSRT"
+R"GSRT(GS_API void *gs_registry_swap(void *registry) {
+    gs_registry *cur = gs_registry_cur ? gs_registry_cur : &gs_registry_main;
+    gs_registry *next = registry ? (gs_registry *)registry : &gs_registry_main;
+    cur->regions = gs_regions;
+    cur->n = gs_nregions;
+    cur->cap = gs_regions_cap;
+    gs_regions = next->regions;
+    gs_nregions = next->n;
+    gs_regions_cap = next->cap;
+    gs_registry_cur = next == &gs_registry_main ? NULL : next;
+    return cur;
+}
+
+)GSRT"
+R"GSRT(/* Releases every region of a registry that is not the installed one. */
+GS_API void gs_registry_free(void *registry) {
+    gs_registry *r = (gs_registry *)registry;
+    if (!r || r == &gs_registry_main || r == gs_registry_cur) return;
+    for (long i = 0; i < r->n; i++) gs_release_region(&r->regions[i]);
+    free(r->regions);
+    free(r);
+}
+
+)GSRT"
+R"GSRT(#ifdef GS_HOSTED
 
 )GSRT"
 R"GSRT(/* Goose code calls this where it can stop (extern fn goose_host_poll()):

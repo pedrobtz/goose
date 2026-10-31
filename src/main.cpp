@@ -875,6 +875,9 @@ Options:
   --standalone          Write C that holds the whole runtime and builds alone.
   --header out.h        Also write a header for a C host, which supplies main
                         and starts the program through goose_init.
+  --contexts            With --header: the host can run the program in more than
+                        one context, each with its own globals and data stacks
+                        (goose_ctx_*), as nested calls from a host process need.
   --include header.h    Have the C include this header (may be repeated).
   --jit                 Also run the program in this process.
   --emit-runtime out.c  Write the runtime's C.
@@ -1351,7 +1354,7 @@ int Main(int argc, char **argv) {
     auto nobce = false, bcetest = false, bcelines = false, norfcheck = false;
     auto stacks = false;
     auto stats = false;
-    auto forcejit = false, standalone = false;
+    auto forcejit = false, standalone = false, contexts = false;
     auto json = false, refresh = false, debug = false, verbose = false, dryrun = false;
     auto jsondiag = false;
     string ccrequest;
@@ -1401,6 +1404,7 @@ int Main(int argc, char **argv) {
         else if (arg == "--unsafe-no-rf-check") norfcheck = true;
         else if (arg == "--jit") forcejit = true;
         else if (arg == "--standalone") standalone = true;
+        else if (arg == "--contexts") contexts = true;
         else if (arg == "--multi-test") multitest = true;
         else if (arg == "--gen-runtime-header") {
             try {
@@ -1552,6 +1556,10 @@ int Main(int argc, char **argv) {
     // A header is for a C host, which supplies its own main and starts the
     // program through goose_init.
     auto library = !headername.empty();
+    if (contexts && !library) {
+        fprintf(stderr, "--contexts requires --header\n");
+        return 1;
+    }
     if (multitest && (tokens || !dumpfile.empty() || !progargs.empty() ||
                       (!outname.empty() && outname.find('%') == string::npos) ||
                       (jit && !nocgen && !parseonly && !dump))) {
@@ -1695,7 +1703,8 @@ int Main(int argc, char **argv) {
         for (auto &rf : runtime_files)
             if (string_view(rf.name) == "runtime_ext.h") runtime_ext_text = rf.text;
         auto stackcfg = StackConfigOf(cdefines);
-        CodeGen cg(ast, runtime_ext_text, includes, norfcheck, library, stackcfg.maxstacks);
+        CodeGen cg(ast, runtime_ext_text, includes, norfcheck, library, stackcfg.maxstacks,
+                   contexts);
         if (stacks) cg.StackReport(msgs, stackcfg);
         // The packages whose native parts the program needs, which a JIT
         // run takes functions from and a build links: its own, when it has
