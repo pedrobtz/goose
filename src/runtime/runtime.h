@@ -166,11 +166,16 @@ typedef double gs_f64 GS_ALIGN1;
 #define GS_TLS
 #endif
 
-/* The linkage of everything the runtime defines outside this file. */
+/* The linkage of everything the runtime defines outside this file. A host
+   that builds the runtime object itself may define it first, for instance
+   as extern with hidden visibility, so that the gs_* names cannot clash
+   with another copy of the runtime in the same process. */
+#ifndef GS_API
 #ifdef GS_SEPARATE_RUNTIME
 #define GS_API extern
 #else
 #define GS_API static
+#endif
 #endif
 
 #define GS_CAT_(a, b) a##b
@@ -730,8 +735,12 @@ static uint64_t gs_shr_u64(uint64_t a, int64_t n) { return a >> (n & 63); }
 #define GS_HAVE_U128 0
 #elif defined(__SIZEOF_INT128__)
 #define GS_HAVE_U128 1
+/* __extension__, or -pedantic reports "ISO C does not support '__int128'
+   types", which hosts that check their compiler output (R's package
+   checks) count as a warning. */
+__extension__ typedef unsigned __int128 gs_u128;
 static uint64_t gs_mulhi_u64(uint64_t a, uint64_t b) {
-    return (uint64_t)(((unsigned __int128)a * b) >> 64);
+    return (uint64_t)(((gs_u128)a * b) >> 64);
 }
 /* (hi * 2^64) / d and its remainder, for hi < d. Clang targeting the
    Microsoft ABI links no 128-bit division routine, so x86-64 divides with
@@ -743,7 +752,7 @@ static uint64_t gs_div128_u64(uint64_t hi, uint64_t d, uint64_t *rem) {
     *rem = r;
     return q;
 #else
-    unsigned __int128 n = (unsigned __int128)hi << 64;
+    gs_u128 n = (gs_u128)hi << 64;
     *rem = (uint64_t)(n % d);
     return (uint64_t)(n / d);
 #endif

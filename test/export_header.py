@@ -47,6 +47,14 @@ int main(int argc, char **argv) {
                          cwd=base, capture_output=True, text=True, timeout=120)
     if gen.returncode:
         raise RuntimeError(f"goose -o --header failed:\n{gen.stdout}{gen.stderr}")
+    # Hosts that check their compiler's output (R's package checks build with
+    # -pedantic) need the generated C free of ISO C warnings: 128-bit integers
+    # go through an __extension__ typedef.
+    if cc.style != "msvc":
+        ped = subprocess.run([str(cc.cc), "-std=gnu11", "-pedantic", "-Werror", "-fsyntax-only",
+                              "lib.c"], cwd=base, capture_output=True, text=True, timeout=120)
+        if ped.returncode:
+            raise RuntimeError(f"the generated C has -pedantic warnings:\n{ped.stderr[:2000]}")
     binary = base / ("host" + tc.EXE_SUFFIX)
     ok, log = cc.compile([base / "host.c", base / "lib.c"], binary, opt=1, extra=extra,
                          runtime=runtime)
