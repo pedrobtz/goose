@@ -31,13 +31,13 @@ static void gs_bld_append(gs_rref b, const void *p, int64_t n) {
    library handed back as a u64, copied into a builder, so nothing foreign
    is a Goose value without a copy. The pointer is trusted as every extern
    call trusts C; a null one appends nothing and is the false result. */
-static uint8_t gs_ffi_cstr(uint64_t p, gs_rref out) {
+GS_MAYBE_UNUSED static uint8_t gs_ffi_cstr(uint64_t p, gs_rref out) {
     const char *s = (const char *)(uintptr_t)p;
     if (!s) return 0;
     gs_bld_append(out, s, (int64_t)strlen(s));
     return 1;
 }
-static uint8_t gs_ffi_bytes(uint64_t p, int64_t n, gs_rref out) {
+GS_MAYBE_UNUSED static uint8_t gs_ffi_bytes(uint64_t p, int64_t n, gs_rref out) {
     if (!p) return 0;
     gs_bld_append(out, (const void *)(uintptr_t)p, n);
     return 1;
@@ -55,11 +55,11 @@ static uint8_t gs_ffi_bytes(uint64_t p, int64_t n, gs_rref out) {
 #endif
 #endif
 #ifdef GS_SQRT_NO_ERRNO
-static double gs_sqrt(double x) { return __builtin_elementwise_sqrt(x); }
-static float gs_sqrtf(float x) { return __builtin_elementwise_sqrt(x); }
+GS_MAYBE_UNUSED static double gs_sqrt(double x) { return __builtin_elementwise_sqrt(x); }
+GS_MAYBE_UNUSED static float gs_sqrtf(float x) { return __builtin_elementwise_sqrt(x); }
 #else
-static double gs_sqrt(double x) { return sqrt(x); }
-static float gs_sqrtf(float x) { return sqrtf(x); }
+GS_MAYBE_UNUSED static double gs_sqrt(double x) { return sqrt(x); }
+GS_MAYBE_UNUSED static float gs_sqrtf(float x) { return sqrtf(x); }
 #endif
 
 /* math's mul_add (stdlib/math.goose): x * y + z, fused into one rounding
@@ -74,22 +74,22 @@ static float gs_sqrtf(float x) { return sqrtf(x); }
 static inline double gs_mul_add_separate(double x, double y, double z) { return x * y + z; }
 static inline float gs_mul_addf_separate(float x, float y, float z) { return x * y + z; }
 #if (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)
-static inline __attribute__((always_inline)) double gs_mul_add_fused(double x, double y, double z) {
+GS_MAYBE_UNUSED static inline __attribute__((always_inline)) double gs_mul_add_fused(double x, double y, double z) {
     return __builtin_fma(x, y, z);
 }
-static inline __attribute__((always_inline)) float gs_mul_addf_fused(float x, float y, float z) {
+GS_MAYBE_UNUSED static inline __attribute__((always_inline)) float gs_mul_addf_fused(float x, float y, float z) {
     return __builtin_fmaf(x, y, z);
 }
 #else
-static inline double gs_mul_add_fused(double x, double y, double z) { return fma(x, y, z); }
-static inline float gs_mul_addf_fused(float x, float y, float z) { return fmaf(x, y, z); }
+GS_MAYBE_UNUSED static inline double gs_mul_add_fused(double x, double y, double z) { return fma(x, y, z); }
+GS_MAYBE_UNUSED static inline float gs_mul_addf_fused(float x, float y, float z) { return fmaf(x, y, z); }
 #endif
 #define GS_MUL_ADD_CAT2(a, b) a##b
 #define GS_MUL_ADD_CAT(a, b) GS_MUL_ADD_CAT2(a, b)
-static double gs_mul_add(double x, double y, double z) {
+GS_MAYBE_UNUSED static double gs_mul_add(double x, double y, double z) {
     return GS_MUL_ADD_CAT(gs_mul_add_, GS_MUL_ADD_BASE)(x, y, z);
 }
-static float gs_mul_addf(float x, float y, float z) {
+GS_MAYBE_UNUSED static float gs_mul_addf(float x, float y, float z) {
     return GS_MUL_ADD_CAT(gs_mul_addf_, GS_MUL_ADD_BASE)(x, y, z);
 }
 #define gs_mul_add(x, y, z) GS_MUL_ADD_CAT(gs_mul_add_, GS_MUL_ADD_MODE)(x, y, z)
@@ -140,8 +140,8 @@ GS_LIBM float gs_powf(float x, float y) GS_LIBM2(powf)
 
 /* std's find_any and find_pair over a slice (gs_scan_any, gs_scan_pair); a
    set is a pointer to std's ByteSet. */
-static int64_t gs_find_any(sl_u8 s, const void *set) { return gs_scan_any(s.data, s.len, set); }
-static int64_t gs_find_pair(sl_u8 s, const void *a, int64_t d, const void *b) {
+GS_MAYBE_UNUSED static int64_t gs_find_any(sl_u8 s, const void *set) { return gs_scan_any(s.data, s.len, set); }
+GS_MAYBE_UNUSED static int64_t gs_find_pair(sl_u8 s, const void *a, int64_t d, const void *b) {
     return gs_scan_pair(s.data, s.len, a, d, b);
 }
 
@@ -151,7 +151,7 @@ static int64_t gs_find_pair(sl_u8 s, const void *a, int64_t d, const void *b) {
 #if defined(_MSC_VER) && !defined(__clang__)
 #include <intrin.h>
 #endif
-static int64_t gs_popcount(uint64_t x) {
+GS_MAYBE_UNUSED static int64_t gs_popcount(uint64_t x) {
 #if (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)
     return __builtin_popcountll(x);
 #elif defined(_MSC_VER) && defined(_M_X64) && defined(__AVX__)
@@ -165,7 +165,7 @@ static int64_t gs_popcount(uint64_t x) {
     return n;
 #endif
 }
-static int64_t gs_clz(uint64_t x) {
+GS_MAYBE_UNUSED static int64_t gs_clz(uint64_t x) {
 #if (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)
     return x ? __builtin_clzll(x) : 64;
 #elif defined(_MSC_VER) && (defined(_M_X64) || defined(_M_ARM64))
@@ -181,7 +181,7 @@ static int64_t gs_clz(uint64_t x) {
     return n;
 #endif
 }
-static int64_t gs_ctz(uint64_t x) {
+GS_MAYBE_UNUSED static int64_t gs_ctz(uint64_t x) {
 #if (defined(__GNUC__) || defined(__clang__)) && !defined(__TINYC__)
     return x ? __builtin_ctzll(x) : 64;
 #elif defined(_MSC_VER) && (defined(_M_X64) || defined(_M_ARM64))

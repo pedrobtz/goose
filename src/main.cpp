@@ -572,9 +572,13 @@ string RuntimeObjectSource() {
                "   for, and link the object with every program `goose -o` writes (all\n"
                "   but --standalone ones). It needs no -D: a program hands the runtime\n"
                "   its configuration as it starts. A program from another version of\n"
-               "   the compiler fails to link against it, missing gs_rt_start_<version>. */\n\n"
+               "   the compiler fails to link against it, missing gs_rt_start_<version>.\n"
+               "   A host process (an R or Python extension) builds it with -DGS_HOSTED:\n"
+               "   failures then return to goose_host_call, and there are no threads.\n"
+               "   See the goose_host_* declarations in a --header output. */\n\n"
                "#define GS_SEPARATE_RUNTIME 1\n#define GS_RUNTIME_OBJECT 1\n"
-               "#define GS_NEED_THREADS 1\n#define GS_RUNTIME_VERSION ", RuntimeVersion(),
+               "#ifdef GS_HOSTED\n#define GS_NEED_THREADS 0\n#else\n#define GS_NEED_THREADS 1\n#endif\n"
+               "#define GS_RUNTIME_VERSION ", RuntimeVersion(),
                "\n\n", RuntimeSections({ "runtime.h", "runtime_impl.h", "runtime_threads.h",
                                           "runtime_ext.h", "runtime_os.h" }));
 }

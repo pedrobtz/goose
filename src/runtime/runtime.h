@@ -148,6 +148,16 @@ typedef double gs_f64 GS_ALIGN1;
 #endif
 /* Inlined at every call: the byte search's helpers (runtime_impl.h), and a
    function Goose wanted to inline but could not (FnSpec::cinline). */
+/* Helpers that some programs use and the runtime object does not: marked
+   rather than warned about, since hosts that check their compiler output
+   (R's package checks) count -Wunused-function, and may not silence it
+   with a pragma. */
+#if defined(__GNUC__) || defined(__clang__)
+#define GS_MAYBE_UNUSED __attribute__((unused))
+#else
+#define GS_MAYBE_UNUSED
+#endif
+
 #if defined(__GNUC__) || defined(__clang__)
 #define GS_INLINE __attribute__((always_inline)) inline
 #elif defined(_MSC_VER)
@@ -359,7 +369,7 @@ static inline int gs_simd_detect(void) {
 
 /* Detected at the first call and kept. Every thread computes the same
    level, so a relaxed atomic is all a race between two first calls needs. */
-static inline int gs_simd_level(void) {
+GS_MAYBE_UNUSED static inline int gs_simd_level(void) {
     static int level = -1;
     int l = __atomic_load_n(&level, __ATOMIC_RELAXED);
     if (l < 0) {
@@ -441,7 +451,7 @@ static uint64_t gs_ld64(const void *p) { uint64_t v; memcpy(&v, p, 8); return v;
 
 /* The low k bytes of a word set (none for k <= 0, all for k >= 8): which
    bytes of a little-endian load lie within a length. */
-static uint64_t gs_bytemask(int64_t k) {
+GS_MAYBE_UNUSED static uint64_t gs_bytemask(int64_t k) {
     return k >= 8 ? ~(uint64_t)0 : k <= 0 ? 0 : ((uint64_t)1 << (k * 8)) - 1;
 }
 
@@ -481,7 +491,7 @@ static void gs_memcpy(void *dst, const void *src, size_t n) {
     memcpy(dst, src, n);
 }
 
-static void gs_memmove(void *dst, const void *src, size_t n) {
+GS_MAYBE_UNUSED static void gs_memmove(void *dst, const void *src, size_t n) {
     if (n) memmove(dst, src, n);
 }
 
@@ -500,7 +510,7 @@ static GS_NOINLINE int gs_memeq_long(const uint8_t *p, const uint8_t *q, size_t 
             (gs_ld64(p + n - 8) ^ gs_ld64(q + n - 8))) == 0;
 }
 
-static int gs_memeq(const void *a, const void *b, size_t n) {
+GS_MAYBE_UNUSED static int gs_memeq(const void *a, const void *b, size_t n) {
     const uint8_t *p = (const uint8_t *)a, *q = (const uint8_t *)b;
     if (n >= 8 && n <= 16)
         return ((gs_ld64(p) ^ gs_ld64(q)) | (gs_ld64(p + n - 8) ^ gs_ld64(q + n - 8))) == 0;
@@ -768,7 +778,7 @@ static uint64_t gs_div128_u64(uint64_t hi, uint64_t d, uint64_t *rem) {
 #define GS_HAVE_U128 0
 #endif
 
-static uint64_t gs_divu_gen(uint64_t d, uint8_t *more) {
+GS_MAYBE_UNUSED static uint64_t gs_divu_gen(uint64_t d, uint8_t *more) {
 #if GS_HAVE_U128
     int k = 63;
     uint64_t rem, m;
@@ -794,7 +804,7 @@ static uint64_t gs_divu_gen(uint64_t d, uint8_t *more) {
 #endif
 }
 
-static uint64_t gs_divu_q(uint64_t x, uint64_t magic, uint8_t more) {
+GS_MAYBE_UNUSED static uint64_t gs_divu_q(uint64_t x, uint64_t magic, uint8_t more) {
 #if GS_HAVE_U128
     uint64_t q;
     if (!magic) return x >> more;
@@ -811,7 +821,7 @@ static uint64_t gs_divu_q(uint64_t x, uint64_t magic, uint8_t more) {
    magic: x / d is the high half of a 32x32 product, which a C compiler
    vectorizes where it keeps the 64x64 one scalar, and which needs no
    128-bit arithmetic, so only a zero divisor gets GS_DIVU_NONE. */
-static uint32_t gs_divu32_gen(uint32_t d, uint8_t *more) {
+GS_MAYBE_UNUSED static uint32_t gs_divu32_gen(uint32_t d, uint8_t *more) {
     int k = 31;
     uint64_t n;
     uint32_t m, rem;
@@ -832,7 +842,7 @@ static uint32_t gs_divu32_gen(uint32_t d, uint8_t *more) {
     return m + 1;
 }
 
-static uint32_t gs_divu32_q(uint32_t x, uint32_t magic, uint8_t more) {
+GS_MAYBE_UNUSED static uint32_t gs_divu32_q(uint32_t x, uint32_t magic, uint8_t more) {
     uint32_t q;
     if (!magic) return x >> more;
     q = (uint32_t)(((uint64_t)magic * x) >> 32);
@@ -852,7 +862,7 @@ static GS_NOINLINE int64_t gs_f2iwrap_slow(double d) {
     if (d < 0) d += 18446744073709551616.0;
     return (int64_t)(uint64_t)d;
 }
-static int64_t gs_f2iwrap(double d) {
+GS_MAYBE_UNUSED static int64_t gs_f2iwrap(double d) {
     if (d >= -9223372036854775808.0 && d < 9223372036854775808.0) return (int64_t)d;
     return gs_f2iwrap_slow(d);
 }
@@ -1129,11 +1139,11 @@ static int64_t gs_uleb_size(const uint8_t *p) {
    program stored, so scalar fields and relative offsets keep the loop above
    inline, where the compilers peel the first byte themselves. */
 
-static GS_NOINLINE int64_t gs_uleb_read_slow(const uint8_t *p) {
+GS_MAYBE_UNUSED static GS_NOINLINE int64_t gs_uleb_read_slow(const uint8_t *p) {
     return gs_uleb_read(p);
 }
 
-static GS_NOINLINE int64_t gs_uleb_size_slow(const uint8_t *p) {
+GS_MAYBE_UNUSED static GS_NOINLINE int64_t gs_uleb_size_slow(const uint8_t *p) {
     return gs_uleb_size(p);
 }
 
@@ -1150,12 +1160,12 @@ static int64_t gs_uleb_write(uint8_t *p, uint64_t v) {
     return (int64_t)(q - p);
 }
 
-static int64_t gs_zig_read(const uint8_t *p) {
+GS_MAYBE_UNUSED static int64_t gs_zig_read(const uint8_t *p) {
     uint64_t u = (uint64_t)gs_uleb_read(p);
     return (int64_t)((u >> 1) ^ (0u - (u & 1)));
 }
 
-static int64_t gs_zig_write(uint8_t *p, int64_t v) {
+GS_MAYBE_UNUSED static int64_t gs_zig_write(uint8_t *p, int64_t v) {
     return gs_uleb_write(p, ((uint64_t)v << 1) ^ (uint64_t)(v >> 63));
 }
 
@@ -1189,7 +1199,7 @@ static int64_t gs_uleb_check(const uint8_t *p, const uint8_t *end, uint64_t *out
 
 /* The same for a signed (zigzag) varint: a value field or a self-relative
    offset of varint width (3.6). */
-static int64_t gs_zig_check(const uint8_t *p, const uint8_t *end, int64_t *out) {
+GS_MAYBE_UNUSED static int64_t gs_zig_check(const uint8_t *p, const uint8_t *end, int64_t *out) {
     uint64_t u = 0;
     int64_t k = gs_uleb_check(p, end, &u);
     if (k) *out = (int64_t)((u >> 1) ^ (0u - (u & 1)));
@@ -1210,7 +1220,7 @@ static int64_t gs_zig_check(const uint8_t *p, const uint8_t *end, int64_t *out) 
    target this compiles for is. The test is a constant to any optimizer; it is
    here so that a big-endian host fails loudly instead of writing bytes that
    only it can read back. */
-static int gs_is_le(void) {
+GS_MAYBE_UNUSED static int gs_is_le(void) {
     const uint16_t one = 1;
     return *(const uint8_t *)&one == 1;
 }

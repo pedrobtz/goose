@@ -49,9 +49,68 @@ static GS_NORETURN void gs_end(int code);
 #define gs_longjmp    _longjmp
 #endif
 
+#ifdef GS_HOSTED
+/* ---------------------------------------------------------------------------
+   Hosted mode (-DGS_HOSTED): the runtime lives inside another program's
+   process, such as an R or Python extension, which calls exported functions
+   through goose_host_call(). Nothing ends the process or writes to stdout or
+   stderr: every failure, a data stack overflow included, returns to the
+   active goose_host_call() with its message, after the data stacks are
+   rewound, and printing goes to the host's out hook. The fault handler is
+   installed only while a call runs (on Windows the vectored handler stays,
+   passing on every fault outside the data stacks, until goose_host_unload).
+   There are no threads: the runtime object is built with GS_NEED_THREADS 0. */
+
+#if defined(_WIN32) && (defined(__GNUC__) || defined(__clang__))
+/* The jump out of a redirected fault must not unwind SEH frames, which
+   mingw's longjmp does. */
+typedef void *gs_host_jmp[5];
+#define gs_host_setjmp(b) __builtin_setjmp(b)
+#define gs_host_longjmp(b) __builtin_longjmp(b, 1)
+#elif defined(_WIN32)
+typedef jmp_buf gs_host_jmp;
+#define gs_host_setjmp(b) setjmp(b)
+#define gs_host_longjmp(b) longjmp(b, 1)
+#else
+/* Restores the signal mask, which the fault handler leaves blocked. */
+typedef sigjmp_buf gs_host_jmp;
+#define gs_host_setjmp(b) sigsetjmp(b, 1)
+#define gs_host_longjmp(b) siglongjmp(b, 1)
+#endif
+
+#define GS_HOST_TEXT 512
+typedef struct {
+    gs_host_jmp jump;
+    char text[GS_HOST_TEXT];
+    int64_t len;
+    int interrupted;
+} gs_hostcall;
+static gs_hostcall *gs_host_active;
+
+typedef struct {
+    void (*out)(int stream, const uint8_t *p, int64_t len);
+    int (*poll)(void);
+} goose_host;
+static goose_host gs_host_hooks;
+
+static void gs_host_record(const void *msg, int64_t len, const char *file, int line);
+static GS_NORETURN void gs_host_jump(void);
+
+/* A failure: its message for the active goose_host_call, and the jump back
+   to it. */
+static GS_NORETURN void gs_host_fail(const void *msg, int64_t len, const char *file, int line) {
+    gs_host_record(msg, len, file, line);
+    gs_host_jump();
+}
+#endif
+
 GS_API GS_NORETURN void gs_panic(const char *msg) {
+#ifdef GS_HOSTED
+    gs_host_fail(msg, (int64_t)strlen(msg), NULL, 0);
+#else
     fprintf(stderr, "goose runtime error: %s\n", msg);
     gs_end(1);
+#endif
 }
 
 /* Where an abort in a contained worker returns to (gs_run_contained), and
@@ -61,7 +120,7 @@ typedef struct {
     uint8_t *msg;
     int64_t len;
 } gs_contained;
-static GS_TLS gs_contained *gs_contain;
+GS_MAYBE_UNUSED static GS_TLS gs_contained *gs_contain;
 
 /* The end of a failed check or abort(msg) (§9.3), whose message is `len`
    bytes at `msg` and the location after it. A contained worker's keeps the
@@ -70,6 +129,9 @@ static GS_TLS gs_contained *gs_contain;
    process. A NULL file is a check the runtime makes on its own, which has
    no Goose location to print. */
 static GS_NORETURN void gs_fail(const void *msg, int64_t len, const char *file, int line) {
+#ifdef GS_HOSTED
+    gs_host_fail(msg, len, file, line);
+#else
     static const char lead[] = "goose runtime error: ";
     int64_t pre = sizeof lead - 1;
     int64_t loc = file ? snprintf(NULL, 0, " (%s:%d)\n", file, line) : 1;
@@ -95,6 +157,7 @@ static GS_NORETURN void gs_fail(const void *msg, int64_t len, const char *file, 
     fwrite(text, 1, (size_t)(pre + len + loc), stderr);
     free(text);
     gs_end(1);
+#endif
 }
 
 /* gs_fail with the message printf formats. */
@@ -117,7 +180,12 @@ GS_API GS_NORETURN void gs_abort_msg(const uint8_t *msg, int64_t len, const char
 }
 
 GS_API GS_NORETURN void gs_exit(int64_t code) {
+#ifdef GS_HOSTED
+    /* A host's process is not the program's to end. */
+    gs_failf(NULL, 0, "exit(%lld) called", (long long)code);
+#else
     gs_end((int)code);
+#endif
 }
 
 GS_API GS_NORETURN void gs_idxfail(int64_t i, int64_t n, const char *file, int line) {
@@ -244,6 +312,41 @@ static char *gs_text(char *p, const char *s) {
     return p;
 }
 
+#ifdef GS_HOSTED
+/* The message for the active call: at most GS_HOST_TEXT - 1 bytes, then
+   the location. No stdio and no malloc, since the fault handler records
+   too. Outside any call there is nobody to tell: Goose code that runs
+   outside goose_host_call() is a bug in the host's glue. */
+static void gs_host_record(const void *msg, int64_t len, const char *file, int line) {
+    gs_hostcall *c = gs_host_active;
+    if (!c) {
+#if defined(__GNUC__) || defined(__clang__)
+        __builtin_trap();
+#else
+        for (;;) *(volatile int *)0 = 0;
+#endif
+    }
+    char *p = c->text, *end = c->text + GS_HOST_TEXT - 1;
+    const char *m = (const char *)msg;
+    for (int64_t i = 0; i < len && p < end; i++) *p++ = m[i];
+    if (file && end - p > 32) {
+        char loc[24];
+        p = gs_text(p, " (");
+        for (const char *f = file; *f && end - p > 26; f++) *p++ = *f;
+        *p++ = ':';
+        char *q = gs_dec(loc, (uint64_t)(line < 0 ? 0 : line));
+        for (char *s = loc; s < q; s++) *p++ = *s;
+        *p++ = ')';
+    }
+    *p = 0;
+    c->len = p - c->text;
+}
+
+static GS_NORETURN void gs_host_jump(void) {
+    gs_host_longjmp(gs_host_active->jump);
+}
+#endif
+
 /* The report of a data stack overrunning its region into the guard gap,
    for one write from the fault handler: whose stacks, past how much, and
    what raises it. Fits GS_OVERFLOW_TEXT. */
@@ -270,13 +373,30 @@ static size_t gs_overflow_text(char *buf, const gs_region *r) {
     return (size_t)(p - buf);
 }
 
+#ifdef GS_HOSTED
+/* An overflow report for the active call, without the "goose runtime
+   error: " every printed one starts with or its newline. */
+static void gs_host_record_overflow(const gs_region *r) {
+    static const char lead[] = "goose runtime error: ";
+    char msg[GS_OVERFLOW_TEXT];
+    size_t n = gs_overflow_text(msg, r);
+    size_t pre = sizeof lead - 1;
+    gs_host_record(msg + pre, (int64_t)(n - pre - 1), NULL, 0);
+}
+#endif
+
 GS_API GS_NORETURN void gs_stack_overflow(const void *at) {
     for (long i = 0; i < gs_nregions; i++) {
         const gs_region *r = &gs_regions[i];
         if ((uintptr_t)at - (uintptr_t)r->base < r->size) {
+#ifdef GS_HOSTED
+            gs_host_record_overflow(r);
+            gs_host_jump();
+#else
             char msg[GS_OVERFLOW_TEXT];
             fwrite(msg, 1, gs_overflow_text(msg, r), stderr);
             gs_end(1);
+#endif
         }
     }
     gs_panic("data stack overflow");
@@ -324,8 +444,31 @@ static void *gs_jit_fault_handler;
    stack's overflow (gs_native_stack_init). */
 #define GS_STACK_GUARANTEE (64u << 10)
 
+#ifdef GS_HOSTED
+static void *gs_host_veh;
+
+/* Sends the faulting thread to gs_host_jump, on a stack aligned as at a
+   function's entry: the filter itself cannot jump. */
+static LONG gs_host_redirect(EXCEPTION_POINTERS *ep) {
+#if defined(_M_X64) || defined(__x86_64__)
+    ep->ContextRecord->Rsp = (ep->ContextRecord->Rsp & ~(DWORD64)15) - 8;
+    ep->ContextRecord->Rip = (DWORD64)(uintptr_t)gs_host_jump;
+#elif defined(_M_ARM64) || defined(__aarch64__)
+    ep->ContextRecord->Sp &= ~(DWORD64)15;
+    ep->ContextRecord->Pc = (DWORD64)(uintptr_t)gs_host_jump;
+#else
+#error "GS_HOSTED: unsupported Windows architecture"
+#endif
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+#endif
+
 static LONG WINAPI gs_fault_filter(EXCEPTION_POINTERS *ep) {
     DWORD code = ep->ExceptionRecord->ExceptionCode;
+#ifdef GS_HOSTED
+    /* The native stack is the host's. */
+    if (code == EXCEPTION_STACK_OVERFLOW) return EXCEPTION_CONTINUE_SEARCH;
+#endif
     if (code == EXCEPTION_STACK_OVERFLOW) {
         /* On the little stack the guarantee kept: WriteFile rather than
            stdio, which could want more. */
@@ -352,6 +495,12 @@ static LONG WINAPI gs_fault_filter(EXCEPTION_POINTERS *ep) {
                     if (page + n > r->committed) r->committed = page + n;
                     return EXCEPTION_CONTINUE_EXECUTION;
                 }
+#ifdef GS_HOSTED
+                if (!gs_host_active) return EXCEPTION_CONTINUE_SEARCH;
+                static const char hostnomem[] = "out of memory committing a data stack";
+                gs_host_record(hostnomem, sizeof hostnomem - 1, NULL, 0);
+                return gs_host_redirect(ep);
+#endif
                 static const char nomem[] =
                     "goose runtime error: out of memory committing a data stack\n";
                 DWORD written;
@@ -359,6 +508,11 @@ static LONG WINAPI gs_fault_filter(EXCEPTION_POINTERS *ep) {
                           NULL);
                 ExitProcess(1);
             }
+#ifdef GS_HOSTED
+            if (!gs_host_active) return EXCEPTION_CONTINUE_SEARCH;
+            gs_host_record_overflow(r);
+            return gs_host_redirect(ep);
+#endif
             char msg[GS_OVERFLOW_TEXT];
             DWORD written;
             WriteFile(GetStdHandle(STD_ERROR_HANDLE), msg, (DWORD)gs_overflow_text(msg, r),
@@ -383,6 +537,9 @@ static void gs_regions_init(void) {
 #ifdef GS_HOSTED_JIT
     gs_jit_fault_handler = handler;
 #endif
+#ifdef GS_HOSTED
+    gs_host_veh = handler;
+#endif
     if (!handler)
         gs_panic("cannot install data stack fault handler");
 }
@@ -390,6 +547,9 @@ static void gs_regions_init(void) {
 /* Run by each thread program's thread as it starts. TinyCC's kernel32.def
    does not list SetThreadStackGuarantee, so a program it builds looks it up. */
 static void gs_native_stack_init(void) {
+#ifdef GS_HOSTED
+    return;  /* The host's thread, and its stack. */
+#endif
     ULONG room = GS_STACK_GUARANTEE;
     #ifdef __TINYC__
         BOOL (WINAPI *guarantee)(PULONG) = (BOOL (WINAPI *)(PULONG))GetProcAddress(
@@ -415,11 +575,11 @@ static void gs_release_region(const gs_region *r) {
 }
 
 /* Whether this is the first call of gs_end; and where the later ones wait. */
-static int gs_end_first(void) {
+GS_MAYBE_UNUSED static int gs_end_first(void) {
     static volatile LONG ended;
     return !InterlockedExchange(&ended, 1);
 }
-static GS_NORETURN void gs_park(void) {
+GS_MAYBE_UNUSED static GS_NORETURN void gs_park(void) {
     for (;;) Sleep(INFINITE);
 }
 
@@ -455,18 +615,26 @@ static void gs_fault_handler(int sig, siginfo_t *info, void *ctx) {
     for (long i = 0; i < gs_nregions; i++) {
         gs_region *r = &gs_regions[i];
         if ((uintptr_t)hit - (uintptr_t)r->base < r->size) {
+#ifdef GS_HOSTED
+            if (!gs_host_active) break;
+            gs_host_record_overflow(r);
+            gs_host_jump();
+#else
             char msg[GS_OVERFLOW_TEXT];
             ssize_t w = write(2, msg, gs_overflow_text(msg, r));
             (void)w;
             _exit(1);
+#endif
         }
     }
+#ifndef GS_HOSTED
     if ((uintptr_t)hit - gs_native_lo < gs_native_hi - gs_native_lo) {
         static const char msg[] = "goose runtime error: native call stack overflow\n";
         ssize_t w = write(2, msg, sizeof(msg) - 1);
         (void)w;
         _exit(1);
     }
+#endif
     /* Not ours: the access faults again under what handled it before, the
        default action or a sanitizer's report. */
     sigaction(sig, sig == SIGSEGV ? &gs_prev_segv : &gs_prev_bus, NULL);
@@ -480,6 +648,9 @@ static size_t gs_os_page_size(void) {
 
 static void gs_regions_init(void) {
     gs_page_size = gs_os_page_size();
+#ifdef GS_HOSTED
+    return;  /* goose_host_call installs the handler for each call. */
+#endif
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_sigaction = gs_fault_handler;
@@ -513,6 +684,9 @@ static size_t gs_sigstack_size(void) {
    the fault handler, unless the thread has one (ASan gives every thread its
    own), and the bounds of the thread's stack. */
 static void gs_native_stack_init(void) {
+#ifdef GS_HOSTED
+    return;  /* The host's thread: no alternate signal stack of ours. */
+#endif
     stack_t ss;
     uintptr_t lo = 0, hi = 0;
     if (!sigaltstack(NULL, &ss) && (ss.ss_flags & SS_DISABLE)) {
@@ -589,18 +763,20 @@ static void gs_release_region(const gs_region *r) {
 #ifndef __ATOMIC_SEQ_CST
 #define __ATOMIC_SEQ_CST 5
 #endif
-static int gs_end_first(void) {
+GS_MAYBE_UNUSED static int gs_end_first(void) {
     static int ended;
     return !__atomic_fetch_add(&ended, 1, __ATOMIC_SEQ_CST);
 }
-static GS_NORETURN void gs_park(void) {
+GS_MAYBE_UNUSED static GS_NORETURN void gs_park(void) {
     for (;;) pause();
 }
 
 #endif
 
-static GS_NORETURN void gs_end(int code) {
-#ifdef GS_HOSTED_JIT
+GS_MAYBE_UNUSED static GS_NORETURN void gs_end(int code) {
+#ifdef GS_HOSTED
+    gs_failf(NULL, 0, "the program ended with code %d", code);
+#elif defined(GS_HOSTED_JIT)
     gs_jit_exit(code);
 #else
     if (!gs_end_first()) gs_park();
@@ -645,6 +821,117 @@ GS_API uint8_t *gs_reserve_region(gs_stack *stack) {
     gs_nregions = i + 1;  /* Publish only the initialized entry. */
     return p;
 }
+
+#ifdef GS_HOSTED
+/* ---------------------------------------------------------------------------
+   The host's API (declared in every --header output). */
+
+static char gs_host_msg[GS_HOST_TEXT];
+
+GS_API void goose_host_set(const goose_host *host) {
+    if (host) gs_host_hooks = *host;
+    else memset(&gs_host_hooks, 0, sizeof gs_host_hooks);
+}
+
+/* Runs body(data), in which the host calls goose_init or exported
+   functions. Returns 0 when it returned, 1 when it failed and 2 when the
+   host's poll stopped it; on a failure every data stack that existed before
+   the call is back where it was, and *msg (when msg is not NULL) points at
+   the message, valid until the next call. A call made while another runs
+   is refused with 1: the program's globals belong to the outer one. */
+GS_API int goose_host_call(void (*body)(void *), void *data, const uint8_t **msg,
+                           int64_t *len) {
+    static const char reentered[] = "Goose re-entered during a Goose call";
+    if (gs_host_active) {
+        memcpy(gs_host_msg, reentered, sizeof reentered);
+        if (msg) *msg = (const uint8_t *)gs_host_msg;
+        if (len) *len = (int64_t)sizeof reentered - 1;
+        return 1;
+    }
+    gs_hostcall call;
+    long n = gs_nregions;
+    uint8_t *small[64];
+    uint8_t **saved = n <= 64 ? small : (uint8_t **)malloc((size_t)n * sizeof *saved);
+    if (!saved) {
+        static const char nomem[] = "out of memory saving the data stack tops";
+        memcpy(gs_host_msg, nomem, sizeof nomem);
+        if (msg) *msg = (const uint8_t *)gs_host_msg;
+        if (len) *len = (int64_t)sizeof nomem - 1;
+        return 1;
+    }
+    for (long i = 0; i < n; i++) saved[i] = gs_regions[i].stack->top;
+#ifndef _WIN32
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = gs_fault_handler;
+    sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGSEGV, &sa, &gs_prev_segv);
+    #ifdef SIGBUS
+        sigaction(SIGBUS, &sa, &gs_prev_bus);
+    #endif
+#endif
+    call.len = 0;
+    call.interrupted = 0;
+    volatile int failed = 0;
+    if (gs_host_setjmp(call.jump) == 0) {
+        gs_host_active = &call;
+        body(data);
+    } else {
+        failed = call.interrupted ? 2 : 1;
+        /* Stacks made during the call (goose_init's) keep their tops. */
+        for (long i = 0; i < n; i++) gs_regions[i].stack->top = saved[i];
+        memcpy(gs_host_msg, call.text, (size_t)call.len + 1);
+        if (msg) *msg = (const uint8_t *)gs_host_msg;
+        if (len) *len = call.len;
+    }
+    gs_host_active = NULL;
+#ifndef _WIN32
+    sigaction(SIGSEGV, &gs_prev_segv, NULL);
+    #ifdef SIGBUS
+        sigaction(SIGBUS, &gs_prev_bus, NULL);
+    #endif
+#endif
+    if (saved != small) free(saved);
+    return failed;
+}
+
+/* Goose code calls this where it can stop (extern fn goose_host_poll()):
+   when the host's poll returns nonzero, the call fails with "interrupted"
+   and goose_host_call returns 2. */
+GS_API void goose_host_poll(void) {
+    if (gs_host_hooks.poll && gs_host_hooks.poll()) {
+        static const char stopped[] = "interrupted";
+        if (gs_host_active) gs_host_active->interrupted = 1;
+        gs_host_fail(stopped, sizeof stopped - 1, NULL, 0);
+    }
+}
+
+/* Bytes in use over every data stack: after any call, failed or not, back
+   where it was before. */
+GS_API int64_t goose_host_stack_used(void) {
+    int64_t used = 0;
+    for (long i = 0; i < gs_nregions; i++)
+        used += (int64_t)(gs_regions[i].stack->top - gs_regions[i].base);
+    return used;
+}
+
+/* The first byte of the first data stack's guard gap, or NULL before
+   goose_init: a write there inside goose_host_call is what an overflow
+   does, so hosts can test that path without filling a stack. */
+GS_API uint8_t *goose_host_test_gap(void) {
+    return gs_nregions ? gs_regions[0].base + gs_regions[0].usable : NULL;
+}
+
+/* Before the host unloads the runtime's code: on Windows the vectored
+   handler must not outlive it. */
+GS_API void goose_host_unload(void) {
+#ifdef _WIN32
+    if (gs_host_veh) RemoveVectoredExceptionHandler(gs_host_veh);
+    gs_host_veh = NULL;
+#endif
+}
+#endif
 
 /* Explicit rather than on every rewind: short-lived scratch can reuse its
    pages cheaply, while a long-running application can give them back after
@@ -1488,6 +1775,7 @@ GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t gap,
         spare -= mainregions;
         gs_thread_cap = spare > workerregions ? spare / workerregions : 1;
     }
+#ifndef GS_HOSTED  /* The streams are the host's. */
     // Unbuffered stdout: output is never lost to an abort or a killed run,
     // and interleaves correctly with stderr diagnostics. Revisit if print
     // throughput ever matters.
@@ -1502,6 +1790,7 @@ GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t gap,
         _setmode(_fileno(stdout), _O_BINARY);
         _setmode(_fileno(stderr), _O_BINARY);
     #endif
+#endif
     gs_regions_init();
     gs_regions_begin(mainregions);
     gs_native_stack_init();
@@ -1793,4 +2082,10 @@ GS_API int64_t gs_fmt_quoted(uint8_t *dst, const uint8_t *s, int64_t n) {
 }
 
 /* stdout is unbuffered (gs_rt_start): each print is this one write. */
+#ifdef GS_HOSTED
+GS_API void gs_out_bytes(const uint8_t *p, int64_t len) {
+    if (gs_host_hooks.out) gs_host_hooks.out(1, p, len);
+}
+#else
 GS_API void gs_out_bytes(const uint8_t *p, int64_t len) { fwrite(p, 1, (size_t)len, stdout); }
+#endif

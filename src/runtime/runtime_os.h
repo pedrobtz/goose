@@ -401,6 +401,17 @@ GS_API uint8_t gs_os_list_dir(sl_u8 path, gs_rref out) {
     return ok ? 1 : 0;
 }
 
+#ifdef GS_HOSTED
+GS_API void gs_os_write_stdout(sl_u8 s) {
+    if (s.len > 0 && gs_host_hooks.out) gs_host_hooks.out(1, s.data, s.len);
+}
+
+GS_API void gs_os_write_stderr(sl_u8 s) {
+    if (s.len > 0 && gs_host_hooks.out) gs_host_hooks.out(2, s.data, s.len);
+}
+
+GS_API void gs_os_flush_stdout(void) {}
+#else
 GS_API void gs_os_write_stdout(sl_u8 s) {
     if (s.len > 0) fwrite(s.data, 1, (size_t)s.len, stdout);
 }
@@ -410,6 +421,7 @@ GS_API void gs_os_write_stderr(sl_u8 s) {
 }
 
 GS_API void gs_os_flush_stdout(void) { fflush(stdout); }
+#endif
 
 /* fgetc takes the stream's lock for every byte; read_line takes it once
    per line and reads the bytes without it. */

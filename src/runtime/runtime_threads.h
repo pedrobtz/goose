@@ -67,6 +67,10 @@ GS_API void gs_stack_stats(int64_t stacks) {
                  (long long)gs_thread_cap);
     else
         snprintf(cap, sizeof cap, "no workers");
+#ifdef GS_HOSTED
+    (void)stacks;
+    return;  /* No stderr in a host's process. */
+#endif
     fprintf(stderr, "goose stack stats: %s: %lld data stacks, %ld regions (reserving %s each); "
             "budget %s for %llu, main program %lld, %s\n",
             who, (long long)stacks, gs_nregions, reserve, budget,

@@ -1087,7 +1087,22 @@ inline string CodeGen::ExportHeader() {
     header += tdecls;
     header += "#pragma pack(pop)\n\n";
     header += "#ifdef __cplusplus\nextern \"C\" {\n#endif\n"
-              "void goose_init(int argc, char **argv);\n";
+              "void goose_init(int argc, char **argv);\n"
+              "/* For a host process, with the runtime built with -DGS_HOSTED: goose_init\n"
+              "   and every exported function run inside goose_host_call, which returns\n"
+              "   0, or 1 on a failure (2 when the host's poll stopped it) with the data\n"
+              "   stacks rewound and the message in *msg. */\n"
+              "typedef struct {\n"
+              "    void (*out)(int stream, const uint8_t *p, int64_t len);\n"
+              "    int (*poll)(void);\n"
+              "} goose_host;\n"
+              "void goose_host_set(const goose_host *host);\n"
+              "int goose_host_call(void (*body)(void *), void *data, const uint8_t **msg,\n"
+              "                    int64_t *len);\n"
+              "void goose_host_poll(void);\n"
+              "int64_t goose_host_stack_used(void);\n"
+              "uint8_t *goose_host_test_gap(void);\n"
+              "void goose_host_unload(void);\n";
     header += exportprotos;
     header += "#ifdef __cplusplus\n}\n#endif\n";
     return header;

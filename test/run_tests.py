@@ -2507,6 +2507,18 @@ def main():
     if cc:
         r.show_task(export_header)
 
+    def hosted_runtime():
+        from hosted_runtime import check_hosted_runtime
+        try:
+            check_hosted_runtime(exe, cc, gendir, runtime=r.runtime, extra=extra)
+            r.ok("hosted runtime: failures, an overflow and an interrupt return to "
+                 "goose_host_call with the stacks rewound, print goes to the host, nested "
+                 "calls are refused, and the object references nothing a host forbids")
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+            r.fail("hosted runtime", str(e))
+    if cc and cc.style != "msvc" and not tc.IS_WINDOWS:
+        r.show_task(hosted_runtime)
+
     def extern_dylib():
         from extern_dylib import check_extern_dylib
         try:
