@@ -172,6 +172,8 @@ struct CodeGen {
     string exportprotos;
     bool usesthreads = false;
     bool library = false;
+    // --contexts: globals through gs_gl, as with threads, and goose_ctx_*.
+    bool contexts = false;
     // Measurement only, and unsound: emit the whole `return ... from`
     // machinery but none of the post-call discriminant checks, so a program
     // that never takes a long-distance return still prints the right answer
@@ -1512,8 +1514,10 @@ struct CodeGen {
     // process state that the driver must install before constructing us.
     // A function the extern support declares gets no prototype here.
     CodeGen(Ast &_ast, string_view runtime_ext_text, const vector<string> &headers,
-            bool _norfcheck = false, bool _library = false, int64_t _maxstacks = 0)
-        : ast(_ast), library(_library), norfcheck(_norfcheck), maxstacks(_maxstacks) {
+            bool _norfcheck = false, bool _library = false, int64_t _maxstacks = 0,
+            bool _contexts = false)
+        : ast(_ast), library(_library), contexts(_contexts), norfcheck(_norfcheck),
+          maxstacks(_maxstacks) {
         for (auto t : ast.alltypes)
             if (t->kind == TY_REF && t->ref->pool) poolglobals.insert(t->ref->pool);
         ComputeRelRootMax();
@@ -1543,11 +1547,12 @@ struct CodeGen {
         if (!library) EmitMain();
         if (usesthreads) predefs = "#define GS_NEED_THREADS 1\n";
         // The instance block: with workers each thread reaches its own
-        // through gs_gl; without them there is only main's.
+        // through gs_gl, and with contexts each context; otherwise there is
+        // only main's.
         Append(data, "typedef struct {\n", gblock.empty() ? "    uint8_t gs_none;\n" : gblock,
                "} gs_globals_t;\nstatic gs_globals_t gs_globals_main;\n",
-               usesthreads ? "#define GS_GL ((gs_globals_t *)gs_gl)\n"
-                           : "#define GS_GL (&gs_globals_main)\n");
+               usesthreads || contexts ? "#define GS_GL ((gs_globals_t *)gs_gl)\n"
+                                       : "#define GS_GL (&gs_globals_main)\n");
         // Extern fns: the runtime's own C follows the types it is written
         // against, then user headers, then prototypes for whatever neither
         // declares.

@@ -942,6 +942,12 @@ GS_API void gs_rt_start(int argc, char **argv, uint64_t reserve, uint64_t gap,
                         uint64_t budget, int64_t mainregions, int64_t workerregions);
 /* A fresh region, registered to the calling thread program. */
 GS_API uint8_t *gs_reserve_region(gs_stack *stack);
+/* Region registries a host's contexts hold (--contexts, GS_HOSTED): a new
+   empty one; installing one, which returns the one it replaces (NULL is
+   main's); and releasing one's regions. */
+GS_API void *gs_registry_new(int64_t capacity);
+GS_API void *gs_registry_swap(void *registry);
+GS_API void gs_registry_free(void *registry);
 /* The calling thread program's stack use, on stderr (GS_STACK_STATS):
    `stacks` is how many of its indexed data stacks exist. */
 GS_API void gs_stack_stats(int64_t stacks);

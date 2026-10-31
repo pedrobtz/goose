@@ -2519,6 +2519,17 @@ def main():
     if cc and cc.style != "msvc" and not tc.IS_WINDOWS:
         r.show_task(hosted_runtime)
 
+    def hosted_contexts():
+        from hosted_contexts import check_hosted_contexts
+        try:
+            check_hosted_contexts(exe, cc, gendir, runtime=r.runtime, extra=extra)
+            r.ok("hosted contexts: separate globals per context, a nested call in another "
+                 "context, a failed context replaced")
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+            r.fail("hosted contexts", str(e))
+    if cc and cc.style != "msvc" and not tc.IS_WINDOWS:
+        r.show_task(hosted_contexts)
+
     def extern_dylib():
         from extern_dylib import check_extern_dylib
         try:

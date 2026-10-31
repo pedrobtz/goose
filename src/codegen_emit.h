@@ -1010,6 +1010,60 @@ inline void CodeGen::EmitProgramInit() {
                      "    if (gs_program_initialized) return;\n"
                      "    gs_program_init(argc, argv);\n",
                      MainCall(), "}\n\n");
+    // Contexts: what a worker thread has of its own (globals, a stack
+    // block, a region registry), held by the host instead of a thread.
+    // goose_init's is the main context; goose_ctx_swap switches the three
+    // pointers, and goose_ctx_start fills a new context as gs_program_init
+    // fills main's, inside goose_host_call so that a failure comes back.
+    if (library && contexts)
+        Append(code,
+               "struct goose_ctx { void *gl; gs_stack *stks; int64_t nstks; void *reg; int started; };\n"
+               "static struct goose_ctx gs_ctx_main;\n"
+               "static struct goose_ctx *gs_ctx_cur;\n\n"
+               "struct goose_ctx *goose_ctx_new(void) {\n"
+               "    struct goose_ctx *c = (struct goose_ctx *)calloc(1, sizeof *c);\n"
+               "    if (!c) return NULL;\n"
+               "    c->gl = calloc(1, sizeof(gs_globals_t));\n"
+               "    c->reg = gs_registry_new(", mainstacks + globalregions, ");\n"
+               "    if (!c->gl || !c->reg) {\n"
+               "        free(c->gl);\n"
+               "        gs_registry_free(c->reg);\n"
+               "        free(c);\n"
+               "        return NULL;\n"
+               "    }\n"
+               "    return c;\n"
+               "}\n\n"
+               "struct goose_ctx *goose_ctx_swap(struct goose_ctx *c) {\n"
+               "    struct goose_ctx *prev = gs_ctx_cur ? gs_ctx_cur : &gs_ctx_main;\n"
+               "    if (!c) c = &gs_ctx_main;\n"
+               "    if (c == prev) return prev;\n"
+               "    prev->gl = gs_gl;\n"
+               "    prev->stks = gs_stks;\n"
+               "    prev->nstks = gs_nstks;\n"
+               "    prev->reg = gs_registry_swap(c->reg);\n"
+               "    gs_gl = c->gl;\n"
+               "    gs_stks = c->stks;\n"
+               "    gs_nstks = c->nstks;\n"
+               "    gs_ctx_cur = c == &gs_ctx_main ? NULL : c;\n"
+               "    return prev;\n"
+               "}\n\n"
+               "void goose_ctx_start(void *unused) {\n"
+               "    struct goose_ctx *c = gs_ctx_cur;\n"
+               "    (void)unused;\n"
+               "    if (!gs_program_initialized)\n"
+               "        gs_panic(\"goose_init must be called before goose_ctx_start\");\n"
+               "    if (!c || c->started) return;\n"
+               "    gs_stack_block(", mainstacks, ");\n"
+               "    gs_init_globals();\n"
+               "    c->started = 1;\n"
+               "}\n\n"
+               "void goose_ctx_free(struct goose_ctx *c) {\n"
+               "    if (!c || c == &gs_ctx_main || c == gs_ctx_cur) return;\n"
+               "    gs_registry_free(c->reg);\n"
+               "    free(c->stks);\n"
+               "    free(c->gl);\n"
+               "    free(c);\n"
+               "}\n\n");
 }
 
 // The statement that runs fn main(), or nothing for a library without one.
@@ -1103,6 +1157,17 @@ inline string CodeGen::ExportHeader() {
               "int64_t goose_host_stack_used(void);\n"
               "uint8_t *goose_host_test_gap(void);\n"
               "void goose_host_unload(void);\n";
+    if (contexts)
+        header += "/* Contexts (--contexts): each has its own globals and data stacks. A new\n"
+                  "   one is started by goose_ctx_start inside goose_host_call while it is\n"
+                  "   the current one; goose_host_call then accepts a call nested in\n"
+                  "   another once the host has swapped in a different context. The main\n"
+                  "   context, goose_init's, is what goose_ctx_swap(NULL) restores. */\n"
+                  "typedef struct goose_ctx goose_ctx;\n"
+                  "goose_ctx *goose_ctx_new(void);\n"
+                  "goose_ctx *goose_ctx_swap(goose_ctx *ctx);\n"
+                  "void goose_ctx_start(void *unused);\n"
+                  "void goose_ctx_free(goose_ctx *ctx);\n";
     header += exportprotos;
     header += "#ifdef __cplusplus\n}\n#endif\n";
     return header;
