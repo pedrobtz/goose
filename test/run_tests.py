@@ -2496,6 +2496,17 @@ def main():
     if cc or jit:
         r.show_task(extern_types)
 
+    def export_header():
+        from export_header import check_export_header
+        try:
+            check_export_header(exe, cc, gendir, runtime=r.runtime, extra=extra)
+            r.ok("export header: a C host file that includes only the --header output "
+                 "builds and calls scalar, slice and slice-result exports")
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+            r.fail("export header", str(e))
+    if cc:
+        r.show_task(export_header)
+
     def extern_dylib():
         from extern_dylib import check_extern_dylib
         try:
