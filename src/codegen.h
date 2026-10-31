@@ -172,7 +172,7 @@ struct CodeGen {
     string exportprotos;
     bool usesthreads = false;
     bool library = false;
-    // --contexts: globals through gs_gl, as with threads, and goose_ctx_*.
+    // --contexts: goose_ctx_*, which copy globals in and out of GS_GL.
     bool contexts = false;
     // Measurement only, and unsound: emit the whole `return ... from`
     // machinery but none of the post-call discriminant checks, so a program
@@ -1547,12 +1547,13 @@ struct CodeGen {
         if (!library) EmitMain();
         if (usesthreads) predefs = "#define GS_NEED_THREADS 1\n";
         // The instance block: with workers each thread reaches its own
-        // through gs_gl, and with contexts each context; otherwise there is
-        // only main's.
+        // through gs_gl; without them there is only main's. Contexts copy
+        // theirs in and out of it (goose_ctx_swap), so that globals keep a
+        // fixed address and the hot paths no extra load.
         Append(data, "typedef struct {\n", gblock.empty() ? "    uint8_t gs_none;\n" : gblock,
                "} gs_globals_t;\nstatic gs_globals_t gs_globals_main;\n",
-               usesthreads || contexts ? "#define GS_GL ((gs_globals_t *)gs_gl)\n"
-                                       : "#define GS_GL (&gs_globals_main)\n");
+               usesthreads ? "#define GS_GL ((gs_globals_t *)gs_gl)\n"
+                           : "#define GS_GL (&gs_globals_main)\n");
         // Extern fns: the runtime's own C follows the types it is written
         // against, then user headers, then prototypes for whatever neither
         // declares.

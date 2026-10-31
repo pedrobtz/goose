@@ -1012,18 +1012,25 @@ inline void CodeGen::EmitProgramInit() {
                      MainCall(), "}\n\n");
     // Contexts: what a worker thread has of its own (globals, a stack
     // block, a region registry), held by the host instead of a thread.
-    // goose_init's is the main context; goose_ctx_swap switches the three
-    // pointers, and goose_ctx_start fills a new context as gs_program_init
-    // fills main's, inside goose_host_call so that a failure comes back.
+    // goose_init's is the main context. The active context's globals always
+    // live at GS_GL: goose_ctx_swap copies the outgoing ones out and the
+    // incoming ones in, so code keeps addressing globals at a fixed place,
+    // and the data stacks' descriptors the registries point at stay put.
+    // A swap happens only between Goose calls or around a nested one, while
+    // the outer call's frames wait in the host's poll; the copy back
+    // restores exactly what they left. goose_ctx_start fills a new context
+    // as gs_program_init fills main's, inside goose_host_call so that a
+    // failure comes back.
     if (library && contexts)
         Append(code,
-               "struct goose_ctx { void *gl; gs_stack *stks; int64_t nstks; void *reg; int started; };\n"
-               "static struct goose_ctx gs_ctx_main;\n"
+               "struct goose_ctx { gs_globals_t *gl; gs_stack *stks; int64_t nstks; void *reg; int started; };\n"
+               "static gs_globals_t gs_ctx_main_gl;\n"
+               "static struct goose_ctx gs_ctx_main = { &gs_ctx_main_gl, NULL, 0, NULL, 1 };\n"
                "static struct goose_ctx *gs_ctx_cur;\n\n"
                "struct goose_ctx *goose_ctx_new(void) {\n"
                "    struct goose_ctx *c = (struct goose_ctx *)calloc(1, sizeof *c);\n"
                "    if (!c) return NULL;\n"
-               "    c->gl = calloc(1, sizeof(gs_globals_t));\n"
+               "    c->gl = (gs_globals_t *)calloc(1, sizeof(gs_globals_t));\n"
                "    c->reg = gs_registry_new(", mainstacks + globalregions, ");\n"
                "    if (!c->gl || !c->reg) {\n"
                "        free(c->gl);\n"
@@ -1037,11 +1044,11 @@ inline void CodeGen::EmitProgramInit() {
                "    struct goose_ctx *prev = gs_ctx_cur ? gs_ctx_cur : &gs_ctx_main;\n"
                "    if (!c) c = &gs_ctx_main;\n"
                "    if (c == prev) return prev;\n"
-               "    prev->gl = gs_gl;\n"
+               "    memcpy(prev->gl, GS_GL, sizeof(gs_globals_t));\n"
                "    prev->stks = gs_stks;\n"
                "    prev->nstks = gs_nstks;\n"
                "    prev->reg = gs_registry_swap(c->reg);\n"
-               "    gs_gl = c->gl;\n"
+               "    memcpy(GS_GL, c->gl, sizeof(gs_globals_t));\n"
                "    gs_stks = c->stks;\n"
                "    gs_nstks = c->nstks;\n"
                "    gs_ctx_cur = c == &gs_ctx_main ? NULL : c;\n"
