@@ -508,7 +508,7 @@ R"GSRT(/* memcpy, memmove and memcmp for a slice's elements. An empty slice's da
    overlapping, where the library's memcpy would take a call and a dispatch
    on the length; as the C library's memcpy, it takes runs that do not
    overlap. */
-static void gs_memcpy(void *dst, const void *src, size_t n) {
+GS_MAYBE_UNUSED static void gs_memcpy(void *dst, const void *src, size_t n) {
     uint8_t *d = (uint8_t *)dst;
     const uint8_t *s = (const uint8_t *)src;
     if (n <= 16) {
@@ -4827,7 +4827,18 @@ R"GSRT(/* fgetc takes the stream's lock for every byte; read_line takes it once
 #endif
 
 )GSRT"
-R"GSRT(/* One line of stdin, without its newline or a carriage return before it;
+R"GSRT(#ifdef GS_HOSTED
+/* stdin is the host's (R's console reads it): a hosted program sees none,
+   and touches no stream of the process. */
+GS_API uint8_t gs_os_read_line(gs_rref out) {
+    (void)out;
+    return 0;
+}
+
+)GSRT"
+R"GSRT(GS_API void gs_os_read_stdin(gs_rref out) { (void)out; }
+#else
+/* One line of stdin, without its newline or a carriage return before it;
    false at end of input. */
 GS_API uint8_t gs_os_read_line(gs_rref out) {
     gs_os_lock_stdin();
@@ -4857,6 +4868,7 @@ GS_API void gs_os_read_stdin(gs_rref out) {
         gs_bld_append(out, buf, (int64_t)n);
     }
 }
+#endif
 
 )GSRT"
 R"GSRT(GS_API int64_t gs_os_arg_count(void) { return gs_argc; }

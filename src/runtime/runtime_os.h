@@ -435,6 +435,16 @@ GS_API void gs_os_flush_stdout(void) { fflush(stdout); }
 #define gs_os_getc_stdin() getc_unlocked(stdin)
 #endif
 
+#ifdef GS_HOSTED
+/* stdin is the host's (R's console reads it): a hosted program sees none,
+   and touches no stream of the process. */
+GS_API uint8_t gs_os_read_line(gs_rref out) {
+    (void)out;
+    return 0;
+}
+
+GS_API void gs_os_read_stdin(gs_rref out) { (void)out; }
+#else
 /* One line of stdin, without its newline or a carriage return before it;
    false at end of input. */
 GS_API uint8_t gs_os_read_line(gs_rref out) {
@@ -464,6 +474,7 @@ GS_API void gs_os_read_stdin(gs_rref out) {
         gs_bld_append(out, buf, (int64_t)n);
     }
 }
+#endif
 
 GS_API int64_t gs_os_arg_count(void) { return gs_argc; }
 
